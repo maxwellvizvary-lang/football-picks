@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 
-// Team baseline power ratings relative to league average (0.0)
+// League baseline power ratings (EPA / DVOA consensus baseline)
 const BASE_POWER_RATINGS: Record<string, number> = {
   KC: 5.5, SF: 5.2, BAL: 4.8, DET: 4.5, BUF: 4.2, PHI: 4.0, CIN: 3.5, HOU: 3.2,
   GB: 2.8, DAL: 2.5, MIA: 2.2, LAR: 2.0, NYJ: 1.8, CLE: 1.2, TB: 0.8, ATL: 0.5,
@@ -18,93 +18,108 @@ interface GameDisplay {
   homeTeam: string;
   awayAbbr: string;
   homeAbbr: string;
-  kickoff: string;
-  liveSpread: number; // e.g. -3.5 (Home favored)
+  awayScore?: string;
+  homeScore?: string;
+  gameStatusText: string;
+  isLiveOrFinal: boolean;
+  liveSpread: number; // Negative = Home favored
   homeML: number;
   awayML: number;
   projectedSpread: number;
 }
 
-export default function App() {
+export default function GridironDashboard() {
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [activeTab, setActiveTab] = useState<"SPREAD" | "MONEYLINE" | "UPSET">("SPREAD");
   const [games, setGames] = useState<GameDisplay[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<string>("");
+  const [syncCount, setSyncCount] = useState<number>(0);
 
-  // Fetch real schedule & Vegas lines from ESPN live API
-  useEffect(() => {
-    async function fetchLiveSlate() {
-      setLoading(true);
-      try {
-        const res = await fetch(
-          `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=2024&seasontype=2&week=${selectedWeek}`
-        );
-        const data = await res.json();
-        const events = data.events || [];
+  const fetchLiveSlate = useCallback(async () => {
+    setLoading(true);
+    try {
+      // Direct live ESPN Scoreboard API feed for active NFL season
+      const res = await fetch(
+        `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${selectedWeek}`
+      );
+      const data = await res.json();
+      const events = data.events || [];
 
-        const parsedGames: GameDisplay[] = events.map((ev: any) => {
-          const comp = ev.competitions?.[0];
-          const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
-          const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
+      const parsedGames: GameDisplay[] = events.map((ev: any) => {
+        const comp = ev.competitions?.[0];
+        const statusType = ev.status?.type?.name; // STATUS_SCHEDULED, STATUS_IN_PROGRESS, STATUS_FINAL
+        const statusDetail = ev.status?.type?.detail || "Scheduled";
 
-          const homeAbbr = home?.team?.abbreviation || "HOU";
-          const awayAbbr = away?.team?.abbreviation || "IND";
+        const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
+        const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
 
-          // Extract odds provider line if available, otherwise compute standard line
-          const oddsData = comp?.odds?.[0];
-          let liveSpread = -3.5;
-          let homeML = -160;
-          let awayML = +140;
+        const homeAbbr = home?.team?.abbreviation || "HOU";
+        const awayAbbr = away?.team?.abbreviation || "IND";
 
-          if (oddsData?.spread !== undefined) {
-            liveSpread = Number(oddsData.spread);
-          } else {
-            // Default derived spread based on team ratings
-            const diff = (BASE_POWER_RATINGS[awayAbbr] || 0) - (BASE_POWER_RATINGS[homeAbbr] || 0) - 1.75;
-            liveSpread = Number((Math.round(diff * 2) / 2).toFixed(1));
-            if (liveSpread % 1 === 0) liveSpread -= 0.5; // Ensure half-point pool line
-          }
+        // Read Live Consensus Spreads from API or fallback to EPA power difference
+        const oddsData = comp?.odds?.[0];
+        let liveSpread = -3.5;
+        let homeML = -160;
+        let awayML = +140;
 
-          if (oddsData?.moneyline?.home?.odds) {
-            homeML = oddsData.moneyline.home.odds;
-            awayML = oddsData.moneyline.away.odds;
-          } else {
-            homeML = liveSpread < 0 ? -110 + Math.round(liveSpread * 25) : 100 + Math.round(liveSpread * 25);
-            awayML = liveSpread < 0 ? 100 + Math.round(Math.abs(liveSpread) * 22) : -110 - Math.round(liveSpread * 22);
-          }
+        if (oddsData?.spread !== undefined) {
+          liveSpread = Number(oddsData.spread);
+        } else {
+          const diff = (BASE_POWER_RATINGS[awayAbbr] || 0) - (BASE_POWER_RATINGS[homeAbbr] || 0) - 1.75;
+          liveSpread = Number((Math.round(diff * 2) / 2).toFixed(1));
+          if (liveSpread % 1 === 0) liveSpread -= 0.5; // Preserve half-point hook
+        }
 
-          // Phase 1 Model Projection: Baseline Power Diff - HFA (1.75)
-          const homeRating = BASE_POWER_RATINGS[homeAbbr] || 0;
-          const awayRating = BASE_POWER_RATINGS[awayAbbr] || 0;
-          const projectedSpread = Number(((awayRating - homeRating) - 1.75).toFixed(1));
+        if (oddsData?.moneyline?.home?.odds) {
+          homeML = oddsData.moneyline.home.odds;
+          awayML = oddsData.moneyline.away.odds;
+        } else {
+          homeML = liveSpread < 0 ? -110 + Math.round(liveSpread * 25) : 100 + Math.round(liveSpread * 25);
+          awayML = liveSpread < 0 ? 100 + Math.round(Math.abs(liveSpread) * 22) : -110 - Math.round(liveSpread * 22);
+        }
 
-          return {
-            id: ev.id,
-            matchup: `${away?.team?.displayName} @ ${home?.team?.displayName}`,
-            awayTeam: away?.team?.displayName || awayAbbr,
-            homeTeam: home?.team?.displayName || homeAbbr,
-            awayAbbr,
-            homeAbbr,
-            kickoff: new Date(ev.date).toLocaleDateString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }),
-            liveSpread,
-            homeML,
-            awayML,
-            projectedSpread
-          };
-        });
+        // Projected spread from power differential minus 1.75 Home Field Advantage
+        const homeRating = BASE_POWER_RATINGS[homeAbbr] || 0;
+        const awayRating = BASE_POWER_RATINGS[awayAbbr] || 0;
+        const projectedSpread = Number(((awayRating - homeRating) - 1.75).toFixed(1));
 
-        setGames(parsedGames);
-      } catch (err) {
-        console.error("Failed to load ESPN slate", err);
-      } finally {
-        setLoading(false);
-      }
+        return {
+          id: ev.id,
+          matchup: `${away?.team?.displayName} @ ${home?.team?.displayName}`,
+          awayTeam: away?.team?.displayName || awayAbbr,
+          homeTeam: home?.team?.displayName || homeAbbr,
+          awayAbbr,
+          homeAbbr,
+          awayScore: away?.score,
+          homeScore: home?.score,
+          gameStatusText: statusDetail,
+          isLiveOrFinal: statusType === "STATUS_IN_PROGRESS" || statusType === "STATUS_FINAL",
+          liveSpread,
+          homeML,
+          awayML,
+          projectedSpread
+        };
+      });
+
+      setGames(parsedGames);
+      setLastUpdated(new Date().toLocaleTimeString());
+      setSyncCount((prev) => prev + 1);
+    } catch (err) {
+      console.error("ESPN live fetch error:", err);
+    } finally {
+      setLoading(false);
     }
-
-    fetchLiveSlate();
   }, [selectedWeek]);
 
-  // Win probability & EV calculations
+  useEffect(() => {
+    fetchLiveSlate();
+    // Auto-poll live game states and lines every 60 seconds
+    const interval = setInterval(fetchLiveSlate, 60000);
+    return () => clearInterval(interval);
+  }, [fetchLiveSlate]);
+
+  // Model win prob formula & EV calculation
   const spreadToWinProbability = (spread: number) => 1 / (1 + Math.pow(10, spread / 14.5));
   const calculateEV = (winProb: number, odds: number) => {
     const profit = odds > 0 ? odds : 100 / (Math.abs(odds) / 100);
@@ -143,7 +158,7 @@ export default function App() {
     return { ...g, teamPicked, linePicked, edge, ...meta };
   }).sort((a, b) => b.edge - a.edge);
 
-  // 2. MONEYLINE RANKINGS
+  // 2. MONEYLINE VALUE RANKINGS
   const moneylineCards = games.map((g) => {
     const homeProb = spreadToWinProbability(g.projectedSpread);
     const awayProb = 1 - homeProb;
@@ -158,7 +173,7 @@ export default function App() {
     return { ...g, team, odds, evPct, winProbPct, ...meta };
   }).sort((a, b) => b.evPct - a.evPct);
 
-  // 3. UPSET RANKINGS
+  // 3. UPSET RADAR RANKINGS
   const upsetCards = games.map((g) => {
     const isAwayDog = g.awayML > g.homeML;
     const dog = isAwayDog ? g.awayTeam : g.homeTeam;
@@ -179,29 +194,51 @@ export default function App() {
 
   return (
     <main className="max-w-3xl mx-auto px-4 py-8">
-      {/* Header with Active Week Selector */}
-      <header className="flex items-center justify-between border-b border-zinc-800 pb-5 mb-6">
-        <div>
-          <h1 className="text-2xl font-black tracking-tight text-white">GridironPicks</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">Live Market Radar & Pick'em Engine</p>
+      {/* App Header with Live Sync Status */}
+      <header className="border-b border-zinc-800 pb-5 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-black tracking-tight text-white">GridironPicks</h1>
+              <span className="inline-flex items-center gap-1 bg-emerald-950/60 border border-emerald-500/50 text-emerald-400 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                LIVE SYNC
+              </span>
+            </div>
+            <p className="text-xs text-zinc-500 mt-0.5">Automated Real-Time Pick'em & EV Radar</p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => fetchLiveSlate()}
+              className="text-xs font-mono bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 px-2.5 py-1.5 rounded-lg transition active:scale-95"
+              title="Click to force-refresh data from ESPN feed"
+            >
+              ↻ Refresh Now
+            </button>
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="week-selector" className="text-xs text-zinc-400 font-semibold">Slate:</label>
+              <select
+                id="week-selector"
+                value={selectedWeek}
+                onChange={(e) => setSelectedWeek(Number(e.target.value))}
+                className="bg-zinc-900 border border-zinc-700 text-xs font-bold rounded-lg px-3 py-1.5 text-zinc-200 outline-none hover:border-zinc-500 cursor-pointer"
+              >
+                {Array.from({ length: 18 }, (_, i) => (
+                  <option key={i + 1} value={i + 1}>Week {i + 1}</option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <label htmlFor="week-select" className="text-xs text-zinc-400 font-semibold">Slate:</label>
-          <select
-            id="week-select"
-            value={selectedWeek}
-            onChange={(e) => setSelectedWeek(Number(e.target.value))}
-            className="bg-zinc-900 border border-zinc-700 text-xs font-bold rounded-lg px-3 py-1.5 text-zinc-200 outline-none hover:border-zinc-500 cursor-pointer"
-          >
-            {Array.from({ length: 18 }, (_, i) => (
-              <option key={i + 1} value={i + 1}>Week {i + 1}</option>
-            ))}
-          </select>
+        <div className="flex items-center justify-between mt-3 text-[11px] font-mono text-zinc-500">
+          <span>Feed: ESPN Official API</span>
+          <span>Last Updated: <strong className="text-zinc-300">{lastUpdated || "Connecting..."}</strong> (Sync #{syncCount})</span>
         </div>
       </header>
 
-      {/* Tabs */}
+      {/* Nav Tabs */}
       <nav className="flex gap-2 p-1.5 bg-zinc-900/90 border border-zinc-800 rounded-xl mb-6">
         {(["SPREAD", "MONEYLINE", "UPSET"] as const).map((tab) => (
           <button
@@ -216,10 +253,11 @@ export default function App() {
         ))}
       </nav>
 
-      {/* Content */}
-      {loading ? (
-        <div className="py-20 text-center text-zinc-500 text-sm animate-pulse">
-          Fetching live matchups and Vegas odds from ESPN...
+      {/* Cards List */}
+      {loading && games.length === 0 ? (
+        <div className="py-24 text-center text-zinc-500 text-sm">
+          <div className="inline-block w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3" />
+          <p>Connecting to ESPN live scoreboard & calculating edge tiers...</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -230,15 +268,24 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
                     <span className="text-white font-semibold text-sm">{c.matchup}</span>
-                    <span className="text-[10px] text-zinc-500 font-mono">({c.kickoff})</span>
                   </div>
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
+
+                {/* Score Banner when game is live/final */}
+                {c.isLiveOrFinal && (
+                  <div className="flex items-center justify-between text-xs font-mono bg-zinc-950/40 px-3 py-1.5 rounded mb-2 border border-zinc-800/60">
+                    <span className="text-amber-400 font-bold">{c.gameStatusText}</span>
+                    <span className="text-zinc-200">{c.awayAbbr} {c.awayScore} - {c.homeScore} {c.homeAbbr}</span>
+                  </div>
+                )}
+
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3 rounded-lg gap-2">
                   <div>
                     <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Recommended Pick</span>
                     <span className="text-base font-black text-emerald-400">{c.teamPicked} {c.linePicked}</span>
                     {c.isTossUp && <span className="text-[11px] text-amber-400/90 block mt-0.5">Dead heat — pick your gut favorite</span>}
+                    {!c.isLiveOrFinal && <span className="text-[10px] text-zinc-500 block mt-0.5 font-mono">Kickoff: {c.gameStatusText}</span>}
                   </div>
                   <div className="flex gap-4 text-xs font-mono text-zinc-400 border-t sm:border-t-0 sm:border-l border-zinc-800 pt-2 sm:pt-0 sm:pl-4">
                     <div><span className="text-zinc-500 block text-[10px]">Live Line</span><span className="text-zinc-200 font-bold">{c.liveSpread > 0 ? `+${c.liveSpread}` : c.liveSpread}</span></div>
@@ -263,6 +310,7 @@ export default function App() {
                   <div>
                     <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Best Value ML</span>
                     <span className="text-base font-black text-emerald-400">{c.team} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
+                    <span className="text-[10px] text-zinc-500 font-mono block mt-0.5">{c.gameStatusText}</span>
                   </div>
                   <div className="text-right font-mono text-xs">
                     <span className="text-zinc-300 block">ROI: <strong className="text-emerald-400">+{c.evPct}%</strong></span>
@@ -286,6 +334,7 @@ export default function App() {
                   <div>
                     <span className="text-amber-500 text-[11px] uppercase font-bold tracking-wider block">Live Dog Candidate</span>
                     <span className="text-base font-black text-amber-400">{c.dog} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
+                    <span className="text-[10px] text-zinc-500 font-mono block mt-0.5">{c.gameStatusText}</span>
                   </div>
                   <div className="text-right font-mono text-xs">
                     <span className="text-zinc-200 block font-bold">Win Prob: {c.winProbPct}%</span>
