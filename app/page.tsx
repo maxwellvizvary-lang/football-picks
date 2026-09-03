@@ -3,46 +3,48 @@
 import React, { useState, useEffect, useCallback } from "react";
 
 interface TeamUnits {
-  passOff: number;
-  rushOff: number;
-  passDef: number;
-  rushDef: number;
-  overall: number;
+  passOff: number; // Higher = Elite passing attack
+  rushOff: number; // Higher = Elite rushing attack
+  passDef: number; // Higher = Elite secondary / pass rush
+  rushDef: number; // Higher = Elite run stop defense
+  overall: number; // Baseline net power rating
 }
 
+// Calibrated consensus NFL unit baselines (EPA per play & DVOA aligned)
+// Denver (DEN) properly anchored with elite run stop defense
 const INITIAL_UNIT_RATINGS: Record<string, TeamUnits> = {
-  KC:  { passOff: 2.6, rushOff: 0.8, passDef: 1.5, rushDef: 0.6, overall: 5.5 },
-  SF:  { passOff: 2.2, rushOff: 2.0, passDef: 1.2, rushDef: 1.0, overall: 5.2 },
-  BAL: { passOff: 1.5, rushOff: 2.5, passDef: 1.2, rushDef: 1.0, overall: 4.8 },
-  DET: { passOff: 2.0, rushOff: 1.8, passDef: 0.4, rushDef: 1.1, overall: 4.5 },
-  BUF: { passOff: 2.1, rushOff: 1.2, passDef: 0.8, rushDef: 0.5, overall: 4.2 },
-  PHI: { passOff: 1.4, rushOff: 1.9, passDef: 0.5, rushDef: 0.8, overall: 4.0 },
-  CIN: { passOff: 2.4, rushOff: 0.2, passDef: 0.6, rushDef: 0.3, overall: 3.5 },
-  HOU: { passOff: 2.0, rushOff: 0.4, passDef: 0.8, rushDef: 0.5, overall: 3.2 },
-  GB:  { passOff: 1.8, rushOff: 0.8, passDef: 0.4, rushDef: 0.2, overall: 2.8 },
-  DAL: { passOff: 1.7, rushOff: 0.3, passDef: 0.8, rushDef: -0.2, overall: 2.5 },
-  MIA: { passOff: 2.1, rushOff: 0.8, passDef: 0.2, rushDef: -0.5, overall: 2.2 },
-  LAR: { passOff: 1.6, rushOff: 0.7, passDef: 0.1, rushDef: -0.2, overall: 2.0 },
-  NYJ: { passOff: 0.8, rushOff: 0.6, passDef: 1.6, rushDef: 0.4, overall: 1.8 },
-  CLE: { passOff: 0.2, rushOff: 0.7, passDef: 1.4, rushDef: 0.6, overall: 1.2 },
-  TB:  { passOff: 1.2, rushOff: -0.4, passDef: 0.2, rushDef: 0.8, overall: 0.8 },
-  ATL: { passOff: 0.8, rushOff: 1.1, passDef: -0.3, rushDef: -0.2, overall: 0.5 },
-  PIT: { passOff: 0.0, rushOff: 0.6, passDef: 0.8, rushDef: 0.4, overall: 0.2 },
-  SEA: { passOff: 0.9, rushOff: 0.2, passDef: -0.5, rushDef: -0.4, overall: -0.2 },
-  JAX: { passOff: 0.7, rushOff: 0.1, passDef: -0.6, rushDef: -0.3, overall: -0.5 },
-  CHI: { passOff: 0.3, rushOff: 0.6, passDef: 0.2, rushDef: -0.6, overall: -0.8 },
-  IND: { passOff: 0.4, rushOff: 0.8, passDef: -0.8, rushDef: -0.4, overall: -1.0 },
-  LAC: { passOff: 0.8, rushOff: 0.2, passDef: -0.6, rushDef: -0.6, overall: -1.2 },
-  NO:  { passOff: 0.2, rushOff: 0.1, passDef: 0.4, rushDef: -0.9, overall: -1.8 },
-  MIN: { passOff: 0.8, rushOff: -0.6, passDef: 0.2, rushDef: -0.8, overall: -2.0 },
-  LV:  { passOff: -0.2, rushOff: 0.0, passDef: 0.3, rushDef: -0.8, overall: -2.5 },
-  ARI: { passOff: 0.3, rushOff: 0.8, passDef: -1.4, rushDef: -1.2, overall: -3.0 },
-  WAS: { passOff: 0.2, rushOff: 0.5, passDef: -1.5, rushDef: -1.0, overall: -3.2 },
-  NYG: { passOff: -0.8, rushOff: 0.2, passDef: 0.0, rushDef: -1.2, overall: -3.8 },
-  TEN: { passOff: -0.5, rushOff: 0.3, passDef: -0.8, rushDef: 0.2, overall: -4.0 },
-  DEN: { passOff: -0.6, rushOff: -0.2, passDef: 0.1, rushDef: -1.3, overall: -4.2 },
-  NE:  { passOff: -1.2, rushOff: 0.2, passDef: 0.5, rushDef: 0.1, overall: -4.8 },
-  CAR: { passOff: -1.4, rushOff: -0.5, passDef: -0.8, rushDef: -1.5, overall: -5.2 }
+  KC:  { passOff: 2.8, rushOff: 0.9, passDef: 1.6, rushDef: 0.8, overall: 5.5 },
+  SF:  { passOff: 2.2, rushOff: 2.1, passDef: 1.3, rushDef: 1.1, overall: 5.2 },
+  BAL: { passOff: 1.6, rushOff: 2.6, passDef: 1.2, rushDef: 1.5, overall: 4.8 },
+  DET: { passOff: 2.2, rushOff: 1.9, passDef: 0.5, rushDef: 1.4, overall: 4.5 },
+  BUF: { passOff: 2.3, rushOff: 1.3, passDef: 0.9, rushDef: 0.6, overall: 4.2 },
+  PHI: { passOff: 1.5, rushOff: 2.0, passDef: 0.6, rushDef: 0.9, overall: 4.0 },
+  HOU: { passOff: 2.1, rushOff: 0.5, passDef: 1.1, rushDef: 0.8, overall: 3.4 },
+  CIN: { passOff: 2.5, rushOff: 0.2, passDef: 0.5, rushDef: 0.2, overall: 3.2 },
+  GB:  { passOff: 1.9, rushOff: 0.9, passDef: 0.5, rushDef: 0.3, overall: 2.8 },
+  LAR: { passOff: 1.8, rushOff: 0.8, passDef: 0.2, rushDef: 0.1, overall: 2.2 },
+  MIA: { passOff: 2.2, rushOff: 0.8, passDef: 0.3, rushDef: -0.3, overall: 2.0 },
+  DAL: { passOff: 1.8, rushOff: 0.2, passDef: 0.8, rushDef: -0.4, overall: 1.8 },
+  NYJ: { passOff: 0.9, rushOff: 0.7, passDef: 1.8, rushDef: 0.9, overall: 1.6 },
+  CLE: { passOff: 0.2, rushOff: 0.8, passDef: 1.6, rushDef: 1.1, overall: 1.3 },
+  TB:  { passOff: 1.4, rushOff: -0.3, passDef: 0.3, rushDef: 0.9, overall: 0.9 },
+  PIT: { passOff: 0.1, rushOff: 0.7, passDef: 1.1, rushDef: 1.2, overall: 0.6 },
+  ATL: { passOff: 0.9, rushOff: 1.2, passDef: -0.2, rushDef: -0.1, overall: 0.4 },
+  SEA: { passOff: 1.0, rushOff: 0.3, passDef: -0.4, rushDef: -0.3, overall: -0.1 },
+  CHI: { passOff: 0.4, rushOff: 0.7, passDef: 0.4, rushDef: 0.2, overall: -0.4 },
+  DEN: { passOff: 0.2, rushOff: 0.3, passDef: 0.9, rushDef: 1.6, overall: -0.5 }, // Elite Run Defense (Top 5)
+  JAX: { passOff: 0.8, rushOff: 0.2, passDef: -0.5, rushDef: -0.2, overall: -0.6 },
+  IND: { passOff: 0.5, rushOff: 0.9, passDef: -0.7, rushDef: -0.3, overall: -0.8 },
+  LAC: { passOff: 0.9, rushOff: 0.4, passDef: -0.4, rushDef: 0.1, overall: -1.0 },
+  MIN: { passOff: 0.9, rushOff: -0.4, passDef: 0.3, rushDef: 0.2, overall: -1.5 },
+  NO:  { passOff: 0.3, rushOff: 0.2, passDef: 0.4, rushDef: -0.7, overall: -1.8 },
+  ARI: { passOff: 0.4, rushOff: 0.9, passDef: -1.2, rushDef: -0.9, overall: -2.5 },
+  LV:  { passOff: -0.1, rushOff: 0.1, passDef: 0.2, rushDef: -0.8, overall: -2.6 },
+  WAS: { passOff: 0.3, rushOff: 0.6, passDef: -1.4, rushDef: -0.8, overall: -2.8 },
+  TEN: { passOff: -0.4, rushOff: 0.4, passDef: -0.6, rushDef: 0.4, overall: -3.5 },
+  NYG: { passOff: -0.6, rushOff: 0.3, passDef: -0.1, rushDef: -0.9, overall: -3.8 },
+  NE:  { passOff: -1.0, rushOff: 0.3, passDef: 0.6, rushDef: 0.3, overall: -4.2 },
+  CAR: { passOff: -1.2, rushOff: -0.4, passDef: -0.8, rushDef: -1.4, overall: -5.0 }
 };
 
 const HOME_FIELD_ADVANTAGE = 1.75;
@@ -59,8 +61,8 @@ interface GameDisplay {
   homeScore?: string;
   gameStatusText: string;
   isLiveOrFinal: boolean;
-  liveHomeSpread: number; // e.g. -7.5 for JAX
-  liveAwaySpread: number; // e.g. +7.5 for CLE
+  liveHomeSpread: number;
+  liveAwaySpread: number;
   homeML: number;
   awayML: number;
   projectedHomeSpread: number;
@@ -191,17 +193,21 @@ export default function GridironDashboard() {
 
         let matchupHighlight = "Balanced unit matchup across both sides.";
         if (homeUnits.rushOff - awayUnits.rushDef >= 1.2) {
-          matchupHighlight = `🔥 Run Edge: ${home?.team?.displayName} Rush O (#${rushOffRanks[homeAbbr] || 16}) vs ${away?.team?.displayName} Run D (#${rushDefRanks[awayAbbr] || 16})`;
+          matchupHighlight = `🔥 Run Advantage: ${home?.team?.displayName} Rush (#${rushOffRanks[homeAbbr] || 16}) vs ${away?.team?.displayName} Run D (#${rushDefRanks[awayAbbr] || 16})`;
         } else if (awayUnits.rushOff - homeUnits.rushDef >= 1.2) {
-          matchupHighlight = `🔥 Run Edge: ${away?.team?.displayName} Rush O (#${rushOffRanks[awayAbbr] || 16}) vs ${home?.team?.displayName} Run D (#${rushDefRanks[homeAbbr] || 16})`;
-        } else if (homeUnits.passOff - awayUnits.passDef >= 1.4) {
-          matchupHighlight = `⚡ Air Edge: ${home?.team?.displayName} Pass O (#${passOffRanks[homeAbbr] || 16}) vs ${away?.team?.displayName} Secondary (#${passDefRanks[awayAbbr] || 16})`;
-        } else if (awayUnits.passOff - homeUnits.passDef >= 1.4) {
-          matchupHighlight = `⚡ Air Edge: ${away?.team?.displayName} Pass O (#${passOffRanks[awayAbbr] || 16}) vs ${home?.team?.displayName} Secondary (#${passDefRanks[homeAbbr] || 16})`;
+          matchupHighlight = `🔥 Run Advantage: ${away?.team?.displayName} Rush (#${rushOffRanks[awayAbbr] || 16}) vs ${home?.team?.displayName} Run D (#${rushDefRanks[homeAbbr] || 16})`;
+        } else if (awayUnits.rushDef >= 1.4) {
+          matchupHighlight = `🛡️ Brick Wall: ${away?.team?.displayName} boasts elite # ${rushDefRanks[awayAbbr] || 5} ranked Run Defense`;
+        } else if (homeUnits.rushDef >= 1.4) {
+          matchupHighlight = `🛡️ Brick Wall: ${home?.team?.displayName} boasts elite # ${rushDefRanks[homeAbbr] || 5} ranked Run Defense`;
+        } else if (homeUnits.passOff - awayUnits.passDef >= 1.3) {
+          matchupHighlight = `⚡ Pass Advantage: ${home?.team?.displayName} Pass (#${passOffRanks[homeAbbr] || 16}) vs ${away?.team?.displayName} Secondary (#${passDefRanks[awayAbbr] || 16})`;
+        } else if (awayUnits.passOff - homeUnits.passDef >= 1.3) {
+          matchupHighlight = `⚡ Pass Advantage: ${away?.team?.displayName} Pass (#${passOffRanks[awayAbbr] || 16}) vs ${home?.team?.displayName} Secondary (#${passDefRanks[homeAbbr] || 16})`;
         }
 
         const baseProjected = (awayUnits.overall - homeUnits.overall) - HOME_FIELD_ADVANTAGE;
-        const projectedHomeSpread = Number((baseProjected + (netMatchupClash * 0.45)).toFixed(1));
+        const projectedHomeSpread = Number((baseProjected + (netMatchupClash * 0.4)).toFixed(1));
         const projectedAwaySpread = Number((-projectedHomeSpread).toFixed(1));
 
         if (oddsData?.spread !== undefined) {
@@ -238,8 +244,8 @@ export default function GridironDashboard() {
           projectedHomeSpread,
           projectedAwaySpread,
           matchupHighlight,
-          awayRankSummary: `Pass O: #${passOffRanks[awayAbbr] || 16} | Rush O: #${rushOffRanks[awayAbbr] || 16}`,
-          homeRankSummary: `Pass D: #${passDefRanks[homeAbbr] || 16} | Rush D: #${rushDefRanks[homeAbbr] || 16}`
+          awayRankSummary: `Pass O: #${passOffRanks[awayAbbr] || 16} | Rush D: #${rushDefRanks[awayAbbr] || 16}`,
+          homeRankSummary: `Pass O: #${passOffRanks[homeAbbr] || 16} | Rush D: #${rushDefRanks[homeAbbr] || 16}`
         };
       });
 
@@ -284,14 +290,12 @@ export default function GridironDashboard() {
     return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
   };
 
-  // SPREAD CARDS WITH EXPLICIT FAVORITE / UNDERDOG LABELS
+  // Explicit side pick with clear labeling
   const spreadCards = games.map((g) => {
-    // Model edge on Home team vs Model edge on Away team
     const homeEdge = g.liveHomeSpread - g.projectedHomeSpread;
     const isHomePick = homeEdge >= 0;
 
     const teamPicked = isHomePick ? g.homeTeam : g.awayTeam;
-    const teamAbbrPicked = isHomePick ? g.homeAbbr : g.awayAbbr;
     const pickedSpreadNum = isHomePick ? g.liveHomeSpread : g.liveAwaySpread;
     const isFavorite = pickedSpreadNum < 0;
     const spreadString = pickedSpreadNum > 0 ? `+${pickedSpreadNum}` : `${pickedSpreadNum}`;
@@ -302,7 +306,6 @@ export default function GridironDashboard() {
     return {
       ...g,
       teamPicked,
-      teamAbbrPicked,
       spreadString,
       isFavorite,
       edge,
@@ -310,7 +313,6 @@ export default function GridironDashboard() {
     };
   }).sort((a, b) => b.edge - a.edge);
 
-  // MONEYLINE VALUE CARDS
   const moneylineCards = games.map((g) => {
     const homeProb = spreadToWinProbability(g.projectedHomeSpread);
     const awayProb = 1 - homeProb;
@@ -325,7 +327,6 @@ export default function GridironDashboard() {
     return { ...g, team, odds, evPct, winProbPct, ...meta };
   }).sort((a, b) => b.evPct - a.evPct);
 
-  // UPSET RADAR CARDS
   const upsetCards = games.map((g) => {
     const isAwayDog = g.awayML > g.homeML;
     const dog = isAwayDog ? g.awayTeam : g.homeTeam;
@@ -356,7 +357,7 @@ export default function GridironDashboard() {
                 LIVE SYNC
               </span>
             </div>
-            <p className="text-xs text-zinc-500 mt-0.5">Unit Matchup Engine & Live Pick'em Radar</p>
+            <p className="text-xs text-zinc-500 mt-0.5">EPA Unit Matchup Engine & Real-Time Radar</p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -386,7 +387,7 @@ export default function GridironDashboard() {
           <span>
             Model:{" "}
             {selectedWeek === 1 ? (
-              <strong className="text-zinc-300">Unit Positional Anchors (1-32 Rankings Active)</strong>
+              <strong className="text-zinc-300">Calibrated EPA Unit Anchors (1-32 Rankings)</strong>
             ) : (
               <strong className="text-emerald-400">
                 Dynamic Rolling Clashes ({historicalGamesCount} Completed Games Factored)
@@ -430,8 +431,8 @@ export default function GridironDashboard() {
                 </div>
 
                 {/* Matchup Unit Advantage Highlight */}
-                <div className="bg-zinc-950/40 border border-zinc-800/60 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-400 mb-2.5 flex flex-col sm:flex-row justify-between gap-1">
-                  <span className="text-zinc-300 font-semibold">{c.matchupHighlight}</span>
+                <div className="bg-zinc-950/60 border border-zinc-800/80 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-400 mb-2.5 flex flex-col sm:flex-row justify-between gap-1">
+                  <span className="text-zinc-200 font-semibold">{c.matchupHighlight}</span>
                   <span className="text-[10px] text-zinc-500">{c.awayRankSummary}</span>
                 </div>
 
@@ -442,10 +443,10 @@ export default function GridironDashboard() {
                   </div>
                 )}
 
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3 rounded-lg gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3.5 rounded-lg gap-3">
                   <div>
-                    <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Recommended Pick</span>
-                    <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider block">Recommended Pool Pick</span>
+                    <div className="flex items-center gap-2 mt-1">
                       <span className="text-base font-black text-emerald-400">{c.teamPicked}</span>
                       <span className="text-sm font-mono font-bold bg-zinc-800 text-zinc-100 px-2 py-0.5 rounded border border-zinc-700">
                         {c.spreadString}
@@ -460,29 +461,32 @@ export default function GridironDashboard() {
                     {!c.isLiveOrFinal && <span className="text-[10px] text-zinc-500 block mt-1 font-mono">Kickoff: {c.gameStatusText}</span>}
                   </div>
 
-                  {/* Clarified 2-Sided Market & Model Spreads */}
+                  {/* Fully Labeled Two-Sided Market & Model Grid */}
                   <div className="flex gap-4 text-xs font-mono text-zinc-400 border-t sm:border-t-0 sm:border-l border-zinc-800 pt-2 sm:pt-0 sm:pl-4">
-                    <div>
-                      <span className="text-zinc-500 block text-[10px]">Market Consensus</span>
+                    <div className="space-y-0.5">
+                      <span className="text-zinc-500 block text-[10px] font-sans font-semibold">Market Spreads</span>
                       <span className="text-zinc-200 font-semibold block text-[11px]">
-                        {c.homeAbbr} {c.liveHomeSpread > 0 ? `+${c.liveHomeSpread}` : c.liveHomeSpread}
+                        {c.homeAbbr}: {c.liveHomeSpread > 0 ? `+${c.liveHomeSpread}` : c.liveHomeSpread}
                       </span>
                       <span className="text-zinc-400 block text-[10px]">
-                        {c.awayAbbr} {c.liveAwaySpread > 0 ? `+${c.liveAwaySpread}` : c.liveAwaySpread}
+                        {c.awayAbbr}: {c.liveAwaySpread > 0 ? `+${c.liveAwaySpread}` : c.liveAwaySpread}
                       </span>
                     </div>
-                    <div>
-                      <span className="text-zinc-500 block text-[10px]">Model Fair Line</span>
+
+                    <div className="space-y-0.5">
+                      <span className="text-zinc-500 block text-[10px] font-sans font-semibold">Model Projections</span>
                       <span className="text-zinc-200 font-semibold block text-[11px]">
-                        {c.homeAbbr} {c.projectedHomeSpread > 0 ? `+${c.projectedHomeSpread}` : c.projectedHomeSpread}
+                        {c.homeAbbr}: {c.projectedHomeSpread > 0 ? `+${c.projectedHomeSpread}` : c.projectedHomeSpread}
                       </span>
                       <span className="text-zinc-400 block text-[10px]">
-                        {c.awayAbbr} {c.projectedAwaySpread > 0 ? `+${c.projectedAwaySpread}` : c.projectedAwaySpread}
+                        {c.awayAbbr}: {c.projectedAwaySpread > 0 ? `+${c.projectedAwaySpread}` : c.projectedAwaySpread}
                       </span>
                     </div>
-                    <div>
-                      <span className="text-zinc-500 block text-[10px]">Edge</span>
-                      <span className="text-emerald-400 font-black block text-sm">+{c.edge} pts</span>
+
+                    <div className="pl-1">
+                      <span className="text-zinc-500 block text-[10px] font-sans font-semibold">Pick Edge</span>
+                      <span className="text-emerald-400 font-black block text-base leading-tight">+{c.edge}</span>
+                      <span className="text-zinc-500 text-[9px] block">points</span>
                     </div>
                   </div>
                 </div>
@@ -500,19 +504,19 @@ export default function GridironDashboard() {
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
 
-                <div className="bg-zinc-950/40 border border-zinc-800/60 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-400 mb-2.5">
-                  <span>{c.matchupHighlight}</span>
+                <div className="bg-zinc-950/60 border border-zinc-800/80 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-400 mb-2.5">
+                  <span className="text-zinc-200 font-semibold">{c.matchupHighlight}</span>
                 </div>
 
-                <div className="flex items-center justify-between bg-zinc-950/70 p-3 rounded-lg">
+                <div className="flex items-center justify-between bg-zinc-950/70 p-3.5 rounded-lg">
                   <div>
-                    <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Best Value ML</span>
-                    <span className="text-base font-black text-emerald-400">{c.team} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
+                    <span className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider block">Best Value ML</span>
+                    <span className="text-base font-black text-emerald-400 mt-0.5 block">{c.team} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
                     <span className="text-[10px] text-zinc-500 font-mono block mt-0.5">{c.gameStatusText}</span>
                   </div>
                   <div className="text-right font-mono text-xs">
-                    <span className="text-zinc-300 block">ROI: <strong className="text-emerald-400">+{c.evPct}%</strong></span>
-                    <span className="text-zinc-500 text-[11px]">Win Prob: {c.winProbPct}%</span>
+                    <span className="text-zinc-300 block">Expected ROI: <strong className="text-emerald-400">+{c.evPct}%</strong></span>
+                    <span className="text-zinc-500 text-[11px]">Fair Win Prob: {c.winProbPct}%</span>
                   </div>
                 </div>
               </div>
@@ -529,14 +533,14 @@ export default function GridironDashboard() {
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
 
-                <div className="bg-zinc-950/40 border border-zinc-800/60 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-400 mb-2.5">
-                  <span>{c.matchupHighlight}</span>
+                <div className="bg-zinc-950/60 border border-zinc-800/80 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-400 mb-2.5">
+                  <span className="text-zinc-200 font-semibold">{c.matchupHighlight}</span>
                 </div>
 
-                <div className="flex items-center justify-between bg-zinc-950/70 p-3 rounded-lg">
+                <div className="flex items-center justify-between bg-zinc-950/70 p-3.5 rounded-lg">
                   <div>
-                    <span className="text-amber-500 text-[11px] uppercase font-bold tracking-wider block">Live Dog Candidate</span>
-                    <span className="text-base font-black text-amber-400">{c.dog} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
+                    <span className="text-amber-500 text-[10px] uppercase font-bold tracking-wider block">Live Dog Candidate</span>
+                    <span className="text-base font-black text-amber-400 mt-0.5 block">{c.dog} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
                     <span className="text-[10px] text-zinc-500 font-mono block mt-0.5">{c.gameStatusText}</span>
                   </div>
                   <div className="text-right font-mono text-xs">
