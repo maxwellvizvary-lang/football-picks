@@ -3,14 +3,13 @@
 import React, { useState, useEffect, useCallback } from "react";
 
 interface TeamUnits {
-  passOff: number; // Positive = better than avg
+  passOff: number;
   rushOff: number;
-  passDef: number; // Positive = better defense (allows less)
+  passDef: number;
   rushDef: number;
   overall: number;
 }
 
-// Initial anchor ratings for all 32 teams
 const INITIAL_UNIT_RATINGS: Record<string, TeamUnits> = {
   KC:  { passOff: 2.6, rushOff: 0.8, passDef: 1.5, rushDef: 0.6, overall: 5.5 },
   SF:  { passOff: 2.2, rushOff: 2.0, passDef: 1.2, rushDef: 1.0, overall: 5.2 },
@@ -60,10 +59,12 @@ interface GameDisplay {
   homeScore?: string;
   gameStatusText: string;
   isLiveOrFinal: boolean;
-  liveSpread: number;
+  liveHomeSpread: number; // e.g. -7.5 for JAX
+  liveAwaySpread: number; // e.g. +7.5 for CLE
   homeML: number;
   awayML: number;
-  projectedSpread: number;
+  projectedHomeSpread: number;
+  projectedAwaySpread: number;
   matchupHighlight: string;
   awayRankSummary: string;
   homeRankSummary: string;
@@ -81,7 +82,6 @@ export default function GridironDashboard() {
   const fetchLiveSlate = useCallback(async () => {
     setLoading(true);
     try {
-      // Clone unit baseline ratings
       const currentRatings: Record<string, TeamUnits> = {};
       Object.keys(INITIAL_UNIT_RATINGS).forEach((abbr) => {
         currentRatings[abbr] = { ...INITIAL_UNIT_RATINGS[abbr] };
@@ -89,7 +89,6 @@ export default function GridironDashboard() {
 
       let totalHistory = 0;
 
-      // Dynamically replay prior weeks to evolve team units & rankings
       if (selectedWeek > 1) {
         const priorWeekFetches = [];
         for (let w = 1; w < selectedWeek; w++) {
@@ -119,11 +118,9 @@ export default function GridironDashboard() {
                 const expectedMargin = (currentRatings[homeAbbr].overall - currentRatings[awayAbbr].overall) + HOME_FIELD_ADVANTAGE;
                 const clampedDelta = Math.max(-14, Math.min(14, actualMargin - expectedMargin)) * K_LEARNING_RATE;
 
-                // Update overall ratings
                 currentRatings[homeAbbr].overall = Number((currentRatings[homeAbbr].overall + clampedDelta).toFixed(2));
                 currentRatings[awayAbbr].overall = Number((currentRatings[awayAbbr].overall - clampedDelta).toFixed(2));
 
-                // Adjust offensive/defensive sub-units based on game flow
                 if (homeScore > 27) {
                   currentRatings[homeAbbr].passOff += 0.12;
                   currentRatings[awayAbbr].passDef -= 0.12;
@@ -147,7 +144,6 @@ export default function GridironDashboard() {
 
       setHistoricalGamesCount(totalHistory);
 
-      // Compute current 1-32 league rankings for each unit
       const getRanks = (key: keyof TeamUnits) => {
         return Object.entries(currentRatings)
           .sort(([, a], [, b]) => b[key] - a[key])
@@ -162,7 +158,6 @@ export default function GridironDashboard() {
       const passDefRanks = getRanks("passDef");
       const rushDefRanks = getRanks("rushDef");
 
-      // Fetch active week scoreboard
       const res = await fetch(
         `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${selectedWeek}`
       );
@@ -181,27 +176,19 @@ export default function GridironDashboard() {
         const awayAbbr = away?.team?.abbreviation || "IND";
 
         const oddsData = comp?.odds?.[0];
-        let liveSpread = -3.5;
+        let liveHomeSpread = -3.5;
         let homeML = -160;
         let awayML = +140;
 
         const homeUnits = currentRatings[homeAbbr] || { passOff: 0, rushOff: 0, passDef: 0, rushDef: 0, overall: 0 };
         const awayUnits = currentRatings[awayAbbr] || { passOff: 0, rushOff: 0, passDef: 0, rushDef: 0, overall: 0 };
 
-        // Matchup Unit Clashes
-        // Clash 1: Away Pass Offense vs Home Pass Defense
         const awayPassClash = awayUnits.passOff - homeUnits.passDef;
-        // Clash 2: Away Rush Offense vs Home Rush Defense
         const awayRushClash = awayUnits.rushOff - homeUnits.rushDef;
-        // Clash 3: Home Pass Offense vs Away Pass Defense
         const homePassClash = homeUnits.passOff - awayUnits.passDef;
-        // Clash 4: Home Rush Offense vs Away Rush Defense
         const homeRushClash = homeUnits.rushOff - awayUnits.rushDef;
-
-        // Net matchup clash edge (Positive = tilts towards Away, Negative = tilts towards Home)
         const netMatchupClash = (awayPassClash + awayRushClash) - (homePassClash + homeRushClash);
 
-        // Determine matchup highlight note
         let matchupHighlight = "Balanced unit matchup across both sides.";
         if (homeUnits.rushOff - awayUnits.rushDef >= 1.2) {
           matchupHighlight = `🔥 Run Edge: ${home?.team?.displayName} Rush O (#${rushOffRanks[homeAbbr] || 16}) vs ${away?.team?.displayName} Run D (#${rushDefRanks[awayAbbr] || 16})`;
@@ -213,23 +200,24 @@ export default function GridironDashboard() {
           matchupHighlight = `⚡ Air Edge: ${away?.team?.displayName} Pass O (#${passOffRanks[awayAbbr] || 16}) vs ${home?.team?.displayName} Secondary (#${passDefRanks[homeAbbr] || 16})`;
         }
 
-        // Projected Spread = Baseline power diff - HFA + Matchup clash tilt
         const baseProjected = (awayUnits.overall - homeUnits.overall) - HOME_FIELD_ADVANTAGE;
-        const projectedSpread = Number((baseProjected + (netMatchupClash * 0.45)).toFixed(1));
+        const projectedHomeSpread = Number((baseProjected + (netMatchupClash * 0.45)).toFixed(1));
+        const projectedAwaySpread = Number((-projectedHomeSpread).toFixed(1));
 
         if (oddsData?.spread !== undefined) {
-          liveSpread = Number(oddsData.spread);
+          liveHomeSpread = Number(oddsData.spread);
         } else {
-          liveSpread = Number((Math.round(baseProjected * 2) / 2).toFixed(1));
-          if (liveSpread % 1 === 0) liveSpread -= 0.5;
+          liveHomeSpread = Number((Math.round(baseProjected * 2) / 2).toFixed(1));
+          if (liveHomeSpread % 1 === 0) liveHomeSpread -= 0.5;
         }
+        const liveAwaySpread = Number((-liveHomeSpread).toFixed(1));
 
         if (oddsData?.moneyline?.home?.odds) {
           homeML = oddsData.moneyline.home.odds;
           awayML = oddsData.moneyline.away.odds;
         } else {
-          homeML = liveSpread < 0 ? -110 + Math.round(liveSpread * 25) : 100 + Math.round(liveSpread * 25);
-          awayML = liveSpread < 0 ? 100 + Math.round(Math.abs(liveSpread) * 22) : -110 - Math.round(liveSpread * 22);
+          homeML = liveHomeSpread < 0 ? -110 + Math.round(liveHomeSpread * 25) : 100 + Math.round(liveHomeSpread * 25);
+          awayML = liveHomeSpread < 0 ? 100 + Math.round(Math.abs(liveHomeSpread) * 22) : -110 - Math.round(liveHomeSpread * 22);
         }
 
         return {
@@ -243,10 +231,12 @@ export default function GridironDashboard() {
           homeScore: home?.score,
           gameStatusText: statusDetail,
           isLiveOrFinal: statusType === "STATUS_IN_PROGRESS" || statusType === "STATUS_FINAL",
-          liveSpread,
+          liveHomeSpread,
+          liveAwaySpread,
           homeML,
           awayML,
-          projectedSpread,
+          projectedHomeSpread,
+          projectedAwaySpread,
           matchupHighlight,
           awayRankSummary: `Pass O: #${passOffRanks[awayAbbr] || 16} | Rush O: #${rushOffRanks[awayAbbr] || 16}`,
           homeRankSummary: `Pass D: #${passDefRanks[homeAbbr] || 16} | Rush D: #${rushDefRanks[homeAbbr] || 16}`
@@ -294,22 +284,35 @@ export default function GridironDashboard() {
     return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
   };
 
-  // 1. SPREAD RANKINGS
+  // SPREAD CARDS WITH EXPLICIT FAVORITE / UNDERDOG LABELS
   const spreadCards = games.map((g) => {
-    const diff = g.liveSpread - g.projectedSpread;
-    const isHome = diff >= 0;
-    const teamPicked = isHome ? g.homeTeam : g.awayTeam;
-    const linePicked = isHome
-      ? (g.liveSpread > 0 ? `+${g.liveSpread}` : `${g.liveSpread}`)
-      : (-g.liveSpread > 0 ? `+${-g.liveSpread}` : `${-g.liveSpread}`);
-    const edge = Number(Math.abs(diff).toFixed(1));
+    // Model edge on Home team vs Model edge on Away team
+    const homeEdge = g.liveHomeSpread - g.projectedHomeSpread;
+    const isHomePick = homeEdge >= 0;
+
+    const teamPicked = isHomePick ? g.homeTeam : g.awayTeam;
+    const teamAbbrPicked = isHomePick ? g.homeAbbr : g.awayAbbr;
+    const pickedSpreadNum = isHomePick ? g.liveHomeSpread : g.liveAwaySpread;
+    const isFavorite = pickedSpreadNum < 0;
+    const spreadString = pickedSpreadNum > 0 ? `+${pickedSpreadNum}` : `${pickedSpreadNum}`;
+
+    const edge = Number(Math.abs(homeEdge).toFixed(1));
     const meta = classifyTier("SPREAD", edge);
-    return { ...g, teamPicked, linePicked, edge, ...meta };
+
+    return {
+      ...g,
+      teamPicked,
+      teamAbbrPicked,
+      spreadString,
+      isFavorite,
+      edge,
+      ...meta
+    };
   }).sort((a, b) => b.edge - a.edge);
 
-  // 2. MONEYLINE VALUE RANKINGS
+  // MONEYLINE VALUE CARDS
   const moneylineCards = games.map((g) => {
-    const homeProb = spreadToWinProbability(g.projectedSpread);
+    const homeProb = spreadToWinProbability(g.projectedHomeSpread);
     const awayProb = 1 - homeProb;
     const homeEV = calculateEV(homeProb, g.homeML);
     const awayEV = calculateEV(awayProb, g.awayML);
@@ -322,12 +325,12 @@ export default function GridironDashboard() {
     return { ...g, team, odds, evPct, winProbPct, ...meta };
   }).sort((a, b) => b.evPct - a.evPct);
 
-  // 3. UPSET RADAR RANKINGS
+  // UPSET RADAR CARDS
   const upsetCards = games.map((g) => {
     const isAwayDog = g.awayML > g.homeML;
     const dog = isAwayDog ? g.awayTeam : g.homeTeam;
     const odds = isAwayDog ? g.awayML : g.homeML;
-    const winProb = isAwayDog ? (1 - spreadToWinProbability(g.projectedSpread)) : spreadToWinProbability(g.projectedSpread);
+    const winProb = isAwayDog ? (1 - spreadToWinProbability(g.projectedHomeSpread)) : spreadToWinProbability(g.projectedHomeSpread);
     const ev = calculateEV(winProb, odds);
     const score = Number(((winProb * 50) + (Math.max(ev, 0) * 50)).toFixed(1));
     const meta = classifyTier("UPSET", score);
@@ -421,7 +424,7 @@ export default function GridironDashboard() {
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
-                    <span className="text-white font-semibold text-sm">{c.matchup}</span>
+                    <span className="text-white font-bold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
                   </div>
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
@@ -439,17 +442,48 @@ export default function GridironDashboard() {
                   </div>
                 )}
 
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3 rounded-lg gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3 rounded-lg gap-3">
                   <div>
                     <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Recommended Pick</span>
-                    <span className="text-base font-black text-emerald-400">{c.teamPicked} {c.linePicked}</span>
-                    {c.isTossUp && <span className="text-[11px] text-amber-400/90 block mt-0.5">Dead heat — pick your gut favorite</span>}
-                    {!c.isLiveOrFinal && <span className="text-[10px] text-zinc-500 block mt-0.5 font-mono">Kickoff: {c.gameStatusText}</span>}
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-base font-black text-emerald-400">{c.teamPicked}</span>
+                      <span className="text-sm font-mono font-bold bg-zinc-800 text-zinc-100 px-2 py-0.5 rounded border border-zinc-700">
+                        {c.spreadString}
+                      </span>
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                        c.isFavorite ? "bg-red-950/60 text-red-400 border border-red-800/50" : "bg-emerald-950/60 text-emerald-400 border border-emerald-800/50"
+                      }`}>
+                        {c.isFavorite ? "Favorite" : "Underdog"}
+                      </span>
+                    </div>
+                    {c.isTossUp && <span className="text-[11px] text-amber-400/90 block mt-1">Dead heat — pick your gut favorite</span>}
+                    {!c.isLiveOrFinal && <span className="text-[10px] text-zinc-500 block mt-1 font-mono">Kickoff: {c.gameStatusText}</span>}
                   </div>
+
+                  {/* Clarified 2-Sided Market & Model Spreads */}
                   <div className="flex gap-4 text-xs font-mono text-zinc-400 border-t sm:border-t-0 sm:border-l border-zinc-800 pt-2 sm:pt-0 sm:pl-4">
-                    <div><span className="text-zinc-500 block text-[10px]">Live Line</span><span className="text-zinc-200 font-bold">{c.liveSpread > 0 ? `+${c.liveSpread}` : c.liveSpread}</span></div>
-                    <div><span className="text-zinc-500 block text-[10px]">Model Line</span><span className="text-zinc-200 font-bold">{c.projectedSpread > 0 ? `+${c.projectedSpread}` : c.projectedSpread}</span></div>
-                    <div><span className="text-zinc-500 block text-[10px]">Edge</span><span className="text-emerald-400 font-bold">+{c.edge} pts</span></div>
+                    <div>
+                      <span className="text-zinc-500 block text-[10px]">Market Consensus</span>
+                      <span className="text-zinc-200 font-semibold block text-[11px]">
+                        {c.homeAbbr} {c.liveHomeSpread > 0 ? `+${c.liveHomeSpread}` : c.liveHomeSpread}
+                      </span>
+                      <span className="text-zinc-400 block text-[10px]">
+                        {c.awayAbbr} {c.liveAwaySpread > 0 ? `+${c.liveAwaySpread}` : c.liveAwaySpread}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-zinc-500 block text-[10px]">Model Fair Line</span>
+                      <span className="text-zinc-200 font-semibold block text-[11px]">
+                        {c.homeAbbr} {c.projectedHomeSpread > 0 ? `+${c.projectedHomeSpread}` : c.projectedHomeSpread}
+                      </span>
+                      <span className="text-zinc-400 block text-[10px]">
+                        {c.awayAbbr} {c.projectedAwaySpread > 0 ? `+${c.projectedAwaySpread}` : c.projectedAwaySpread}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-zinc-500 block text-[10px]">Edge</span>
+                      <span className="text-emerald-400 font-black block text-sm">+{c.edge} pts</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -461,7 +495,7 @@ export default function GridironDashboard() {
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
-                    <span className="text-white font-semibold text-sm">{c.matchup}</span>
+                    <span className="text-white font-bold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
                   </div>
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
@@ -490,7 +524,7 @@ export default function GridironDashboard() {
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
-                    <span className="text-white font-semibold text-sm">{c.matchup}</span>
+                    <span className="text-white font-bold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
                   </div>
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
