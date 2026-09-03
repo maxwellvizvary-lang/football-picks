@@ -1,99 +1,168 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 
-interface SlateGame {
+// Team baseline power ratings relative to league average (0.0)
+const BASE_POWER_RATINGS: Record<string, number> = {
+  KC: 5.5, SF: 5.2, BAL: 4.8, DET: 4.5, BUF: 4.2, PHI: 4.0, CIN: 3.5, HOU: 3.2,
+  GB: 2.8, DAL: 2.5, MIA: 2.2, LAR: 2.0, NYJ: 1.8, CLE: 1.2, TB: 0.8, ATL: 0.5,
+  PIT: 0.2, SEA: -0.2, JAX: -0.5, CHI: -0.8, IND: -1.0, LAC: -1.2, NO: -1.8,
+  MIN: -2.0, LV: -2.5, ARI: -3.0, WAS: -3.2, NYG: -3.8, TEN: -4.0, DEN: -4.2,
+  NE: -4.8, CAR: -5.2
+};
+
+interface GameDisplay {
   id: string;
-  homeTeam: string;
+  matchup: string;
   awayTeam: string;
-  tuesdayPoolSpread: number; // Half-point fixed line (-3.5 means home favored)
-  liveMarketSpread: number;
-  homeMoneyline: number;
-  awayMoneyline: number;
-  projectedSpread: number;  // From Phase 1 EPA & Power Rating Engine
-}
-
-const WEEK_1_GAMES: SlateGame[] = [
-  { id: "1", awayTeam: "Jets", homeTeam: "Titans", tuesdayPoolSpread: -3.5, liveMarketSpread: -4.0, homeMoneyline: -180, awayMoneyline: +155, projectedSpread: -7.3 },
-  { id: "2", awayTeam: "Bills", homeTeam: "Texans", tuesdayPoolSpread: 2.5, liveMarketSpread: 3.0, homeMoneyline: +120, awayMoneyline: -140, projectedSpread: 6.2 },
-  { id: "3", awayTeam: "Ravens", homeTeam: "Chiefs", tuesdayPoolSpread: -3.0, liveMarketSpread: -3.0, homeMoneyline: -150, awayMoneyline: +130, projectedSpread: -4.4 },
-  { id: "4", awayTeam: "Packers", homeTeam: "Eagles", tuesdayPoolSpread: -2.5, liveMarketSpread: -2.0, homeMoneyline: -135, awayMoneyline: +115, projectedSpread: -4.2 },
-  { id: "5", awayTeam: "Jaguars", homeTeam: "Dolphins", tuesdayPoolSpread: -3.5, liveMarketSpread: -3.5, homeMoneyline: -175, awayMoneyline: +150, projectedSpread: -1.8 },
-  { id: "6", awayTeam: "Steelers", homeTeam: "Falcons", tuesdayPoolSpread: -3.5, liveMarketSpread: -3.5, homeMoneyline: -180, awayMoneyline: +155, projectedSpread: -1.2 },
-  { id: "7", awayTeam: "Cardinals", homeTeam: "Bills", tuesdayPoolSpread: -6.5, liveMarketSpread: -6.5, homeMoneyline: -280, awayMoneyline: +230, projectedSpread: -4.8 },
-  { id: "8", awayTeam: "Vikings", homeTeam: "Giants", tuesdayPoolSpread: 1.5, liveMarketSpread: 1.5, homeMoneyline: +105, awayMoneyline: -125, projectedSpread: 0.8 },
-  { id: "9", awayTeam: "Patriots", homeTeam: "Bengals", tuesdayPoolSpread: -8.5, liveMarketSpread: -8.5, homeMoneyline: -400, awayMoneyline: +320, projectedSpread: -6.1 },
-  { id: "10", awayTeam: "Texans", homeTeam: "Colts", tuesdayPoolSpread: 2.5, liveMarketSpread: 3.0, homeMoneyline: +135, awayMoneyline: -160, projectedSpread: 4.8 },
-  { id: "11", awayTeam: "Panthers", homeTeam: "Saints", tuesdayPoolSpread: -4.0, liveMarketSpread: -4.0, homeMoneyline: -200, awayMoneyline: +170, projectedSpread: -3.8 },
-  { id: "12", awayTeam: "Raiders", homeTeam: "Chargers", tuesdayPoolSpread: -3.5, liveMarketSpread: -3.0, homeMoneyline: -165, awayMoneyline: +140, projectedSpread: -2.8 },
-  { id: "13", awayTeam: "Broncos", homeTeam: "Seahawks", tuesdayPoolSpread: -5.5, liveMarketSpread: -6.0, homeMoneyline: -250, awayMoneyline: +205, projectedSpread: -4.9 },
-  { id: "14", awayTeam: "Cowboys", homeTeam: "Browns", tuesdayPoolSpread: -2.5, liveMarketSpread: -2.5, homeMoneyline: -140, awayMoneyline: +120, projectedSpread: -2.2 },
-  { id: "15", awayTeam: "Rams", homeTeam: "Lions", tuesdayPoolSpread: -3.5, liveMarketSpread: -4.5, homeMoneyline: -210, awayMoneyline: +175, projectedSpread: -3.7 },
-  { id: "16", awayTeam: "Commanders", homeTeam: "Buccaneers", tuesdayPoolSpread: -3.5, liveMarketSpread: -3.5, homeMoneyline: -180, awayMoneyline: +150, projectedSpread: -3.6 }
-];
-
-function spreadToWinProbability(spread: number): number {
-  return 1 / (1 + Math.pow(10, spread / 14.5));
-}
-
-function calculateEV(winProb: number, odds: number): number {
-  const profit = odds > 0 ? odds : 100 / (Math.abs(odds) / 100);
-  const ev = (winProb * profit) - ((1 - winProb) * 100);
-  return Number((ev / 100).toFixed(3));
-}
-
-function classifyTier(type: "SPREAD" | "MONEYLINE" | "UPSET", val: number) {
-  if (type === "SPREAD") {
-    if (val >= 2.5) return { tier: "Lock (3★)", color: "emerald", isTossUp: false };
-    if (val >= 1.0) return { tier: "Value Lean (2★)", color: "blue", isTossUp: false };
-    if (val >= 0.5) return { tier: "Slight Lean (1★)", color: "zinc", isTossUp: false };
-    return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
-  }
-  if (type === "MONEYLINE") {
-    if (val >= 8.0) return { tier: "Lock (3★)", color: "emerald", isTossUp: false };
-    if (val >= 4.0) return { tier: "Value Lean (2★)", color: "blue", isTossUp: false };
-    if (val >= 1.5) return { tier: "Slight Lean (1★)", color: "zinc", isTossUp: false };
-    return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
-  }
-  if (val >= 35.0) return { tier: "Lock (3★)", color: "emerald", isTossUp: false };
-  if (val >= 25.0) return { tier: "Value Lean (2★)", color: "blue", isTossUp: false };
-  if (val >= 18.0) return { tier: "Slight Lean (1★)", color: "zinc", isTossUp: false };
-  return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
+  homeTeam: string;
+  awayAbbr: string;
+  homeAbbr: string;
+  kickoff: string;
+  liveSpread: number; // e.g. -3.5 (Home favored)
+  homeML: number;
+  awayML: number;
+  projectedSpread: number;
 }
 
 export default function App() {
+  const [selectedWeek, setSelectedWeek] = useState(1);
   const [activeTab, setActiveTab] = useState<"SPREAD" | "MONEYLINE" | "UPSET">("SPREAD");
+  const [games, setGames] = useState<GameDisplay[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const spreadCards = WEEK_1_GAMES.map((g) => {
-    const spreadDiff = g.tuesdayPoolSpread - g.projectedSpread;
-    const isHome = spreadDiff >= 0;
+  // Fetch real schedule & Vegas lines from ESPN live API
+  useEffect(() => {
+    async function fetchLiveSlate() {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=2024&seasontype=2&week=${selectedWeek}`
+        );
+        const data = await res.json();
+        const events = data.events || [];
+
+        const parsedGames: GameDisplay[] = events.map((ev: any) => {
+          const comp = ev.competitions?.[0];
+          const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
+          const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
+
+          const homeAbbr = home?.team?.abbreviation || "HOU";
+          const awayAbbr = away?.team?.abbreviation || "IND";
+
+          // Extract odds provider line if available, otherwise compute standard line
+          const oddsData = comp?.odds?.[0];
+          let liveSpread = -3.5;
+          let homeML = -160;
+          let awayML = +140;
+
+          if (oddsData?.spread !== undefined) {
+            liveSpread = Number(oddsData.spread);
+          } else {
+            // Default derived spread based on team ratings
+            const diff = (BASE_POWER_RATINGS[awayAbbr] || 0) - (BASE_POWER_RATINGS[homeAbbr] || 0) - 1.75;
+            liveSpread = Number((Math.round(diff * 2) / 2).toFixed(1));
+            if (liveSpread % 1 === 0) liveSpread -= 0.5; // Ensure half-point pool line
+          }
+
+          if (oddsData?.moneyline?.home?.odds) {
+            homeML = oddsData.moneyline.home.odds;
+            awayML = oddsData.moneyline.away.odds;
+          } else {
+            homeML = liveSpread < 0 ? -110 + Math.round(liveSpread * 25) : 100 + Math.round(liveSpread * 25);
+            awayML = liveSpread < 0 ? 100 + Math.round(Math.abs(liveSpread) * 22) : -110 - Math.round(liveSpread * 22);
+          }
+
+          // Phase 1 Model Projection: Baseline Power Diff - HFA (1.75)
+          const homeRating = BASE_POWER_RATINGS[homeAbbr] || 0;
+          const awayRating = BASE_POWER_RATINGS[awayAbbr] || 0;
+          const projectedSpread = Number(((awayRating - homeRating) - 1.75).toFixed(1));
+
+          return {
+            id: ev.id,
+            matchup: `${away?.team?.displayName} @ ${home?.team?.displayName}`,
+            awayTeam: away?.team?.displayName || awayAbbr,
+            homeTeam: home?.team?.displayName || homeAbbr,
+            awayAbbr,
+            homeAbbr,
+            kickoff: new Date(ev.date).toLocaleDateString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }),
+            liveSpread,
+            homeML,
+            awayML,
+            projectedSpread
+          };
+        });
+
+        setGames(parsedGames);
+      } catch (err) {
+        console.error("Failed to load ESPN slate", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchLiveSlate();
+  }, [selectedWeek]);
+
+  // Win probability & EV calculations
+  const spreadToWinProbability = (spread: number) => 1 / (1 + Math.pow(10, spread / 14.5));
+  const calculateEV = (winProb: number, odds: number) => {
+    const profit = odds > 0 ? odds : 100 / (Math.abs(odds) / 100);
+    return Number((((winProb * profit) - ((1 - winProb) * 100)) / 100).toFixed(3));
+  };
+
+  const classifyTier = (type: "SPREAD" | "MONEYLINE" | "UPSET", val: number) => {
+    if (type === "SPREAD") {
+      if (val >= 2.5) return { tier: "Lock (3★)", color: "emerald", isTossUp: false };
+      if (val >= 1.0) return { tier: "Value Lean (2★)", color: "blue", isTossUp: false };
+      if (val >= 0.5) return { tier: "Slight Lean (1★)", color: "zinc", isTossUp: false };
+      return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
+    }
+    if (type === "MONEYLINE") {
+      if (val >= 8.0) return { tier: "Lock (3★)", color: "emerald", isTossUp: false };
+      if (val >= 4.0) return { tier: "Value Lean (2★)", color: "blue", isTossUp: false };
+      if (val >= 1.5) return { tier: "Slight Lean (1★)", color: "zinc", isTossUp: false };
+      return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
+    }
+    if (val >= 35.0) return { tier: "Lock (3★)", color: "emerald", isTossUp: false };
+    if (val >= 25.0) return { tier: "Value Lean (2★)", color: "blue", isTossUp: false };
+    if (val >= 18.0) return { tier: "Slight Lean (1★)", color: "zinc", isTossUp: false };
+    return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
+  };
+
+  // 1. SPREAD RANKINGS
+  const spreadCards = games.map((g) => {
+    const diff = g.liveSpread - g.projectedSpread;
+    const isHome = diff >= 0;
     const teamPicked = isHome ? g.homeTeam : g.awayTeam;
     const linePicked = isHome
-      ? (g.tuesdayPoolSpread > 0 ? `+${g.tuesdayPoolSpread}` : `${g.tuesdayPoolSpread}`)
-      : (-g.tuesdayPoolSpread > 0 ? `+${-g.tuesdayPoolSpread}` : `${-g.tuesdayPoolSpread}`);
-    const edge = Number(Math.abs(spreadDiff).toFixed(1));
+      ? (g.liveSpread > 0 ? `+${g.liveSpread}` : `${g.liveSpread}`)
+      : (-g.liveSpread > 0 ? `+${-g.liveSpread}` : `${-g.liveSpread}`);
+    const edge = Number(Math.abs(diff).toFixed(1));
     const meta = classifyTier("SPREAD", edge);
     return { ...g, teamPicked, linePicked, edge, ...meta };
   }).sort((a, b) => b.edge - a.edge);
 
-  const moneylineCards = WEEK_1_GAMES.map((g) => {
+  // 2. MONEYLINE RANKINGS
+  const moneylineCards = games.map((g) => {
     const homeProb = spreadToWinProbability(g.projectedSpread);
     const awayProb = 1 - homeProb;
-    const homeEV = calculateEV(homeProb, g.homeMoneyline);
-    const awayEV = calculateEV(awayProb, g.awayMoneyline);
+    const homeEV = calculateEV(homeProb, g.homeML);
+    const awayEV = calculateEV(awayProb, g.awayML);
     const isHome = homeEV >= awayEV;
     const team = isHome ? g.homeTeam : g.awayTeam;
-    const odds = isHome ? g.homeMoneyline : g.awayMoneyline;
+    const odds = isHome ? g.homeML : g.awayML;
     const evPct = Number(((isHome ? homeEV : awayEV) * 100).toFixed(1));
     const winProbPct = Number(((isHome ? homeProb : awayProb) * 100).toFixed(1));
     const meta = classifyTier("MONEYLINE", evPct);
     return { ...g, team, odds, evPct, winProbPct, ...meta };
   }).sort((a, b) => b.evPct - a.evPct);
 
-  const upsetCards = WEEK_1_GAMES.map((g) => {
-    const isAwayDog = g.awayMoneyline > g.homeMoneyline;
+  // 3. UPSET RANKINGS
+  const upsetCards = games.map((g) => {
+    const isAwayDog = g.awayML > g.homeML;
     const dog = isAwayDog ? g.awayTeam : g.homeTeam;
-    const odds = isAwayDog ? g.awayMoneyline : g.homeMoneyline;
+    const odds = isAwayDog ? g.awayML : g.homeML;
     const winProb = isAwayDog ? (1 - spreadToWinProbability(g.projectedSpread)) : spreadToWinProbability(g.projectedSpread);
     const ev = calculateEV(winProb, odds);
     const score = Number(((winProb * 50) + (Math.max(ev, 0) * 50)).toFixed(1));
@@ -110,16 +179,29 @@ export default function App() {
 
   return (
     <main className="max-w-3xl mx-auto px-4 py-8">
+      {/* Header with Active Week Selector */}
       <header className="flex items-center justify-between border-b border-zinc-800 pb-5 mb-6">
         <div>
           <h1 className="text-2xl font-black tracking-tight text-white">GridironPicks</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">Pick'em Engine & Market Value Radar</p>
+          <p className="text-xs text-zinc-500 mt-0.5">Live Market Radar & Pick'em Engine</p>
         </div>
-        <span className="text-xs font-mono font-semibold bg-zinc-900 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300">
-          Week 1 Slate
-        </span>
+
+        <div className="flex items-center gap-2">
+          <label htmlFor="week-select" className="text-xs text-zinc-400 font-semibold">Slate:</label>
+          <select
+            id="week-select"
+            value={selectedWeek}
+            onChange={(e) => setSelectedWeek(Number(e.target.value))}
+            className="bg-zinc-900 border border-zinc-700 text-xs font-bold rounded-lg px-3 py-1.5 text-zinc-200 outline-none hover:border-zinc-500 cursor-pointer"
+          >
+            {Array.from({ length: 18 }, (_, i) => (
+              <option key={i + 1} value={i + 1}>Week {i + 1}</option>
+            ))}
+          </select>
+        </div>
       </header>
 
+      {/* Tabs */}
       <nav className="flex gap-2 p-1.5 bg-zinc-900/90 border border-zinc-800 rounded-xl mb-6">
         {(["SPREAD", "MONEYLINE", "UPSET"] as const).map((tab) => (
           <button
@@ -134,78 +216,86 @@ export default function App() {
         ))}
       </nav>
 
-      <div className="space-y-3">
-        {activeTab === "SPREAD" &&
-          spreadCards.map((c, i) => (
-            <div key={c.id} className={`p-4 rounded-xl border bg-zinc-900/80 transition ${c.isTossUp ? "border-amber-500/40" : "border-zinc-800"}`}>
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
-                  <span className="text-white font-semibold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
+      {/* Content */}
+      {loading ? (
+        <div className="py-20 text-center text-zinc-500 text-sm animate-pulse">
+          Fetching live matchups and Vegas odds from ESPN...
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {activeTab === "SPREAD" &&
+            spreadCards.map((c, i) => (
+              <div key={c.id} className={`p-4 rounded-xl border bg-zinc-900/80 transition ${c.isTossUp ? "border-amber-500/40" : "border-zinc-800"}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
+                    <span className="text-white font-semibold text-sm">{c.matchup}</span>
+                    <span className="text-[10px] text-zinc-500 font-mono">({c.kickoff})</span>
+                  </div>
+                  <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
-                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3 rounded-lg gap-2">
+                  <div>
+                    <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Recommended Pick</span>
+                    <span className="text-base font-black text-emerald-400">{c.teamPicked} {c.linePicked}</span>
+                    {c.isTossUp && <span className="text-[11px] text-amber-400/90 block mt-0.5">Dead heat — pick your gut favorite</span>}
+                  </div>
+                  <div className="flex gap-4 text-xs font-mono text-zinc-400 border-t sm:border-t-0 sm:border-l border-zinc-800 pt-2 sm:pt-0 sm:pl-4">
+                    <div><span className="text-zinc-500 block text-[10px]">Live Line</span><span className="text-zinc-200 font-bold">{c.liveSpread > 0 ? `+${c.liveSpread}` : c.liveSpread}</span></div>
+                    <div><span className="text-zinc-500 block text-[10px]">Model Line</span><span className="text-zinc-200 font-bold">{c.projectedSpread > 0 ? `+${c.projectedSpread}` : c.projectedSpread}</span></div>
+                    <div><span className="text-zinc-500 block text-[10px]">Edge</span><span className="text-emerald-400 font-bold">+{c.edge} pts</span></div>
+                  </div>
+                </div>
               </div>
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3 rounded-lg gap-2">
-                <div>
-                  <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Recommended Pick</span>
-                  <span className="text-base font-black text-emerald-400">{c.teamPicked} {c.linePicked}</span>
-                  {c.isTossUp && <span className="text-[11px] text-amber-400/90 block mt-0.5">Dead heat — pick your gut favorite</span>}
-                </div>
-                <div className="flex gap-4 text-xs font-mono text-zinc-400 border-t sm:border-t-0 sm:border-l border-zinc-800 pt-2 sm:pt-0 sm:pl-4">
-                  <div><span className="text-zinc-500 block text-[10px]">Tuesday Pool</span><span className="text-zinc-200 font-bold">{c.tuesdayPoolSpread > 0 ? `+${c.tuesdayPoolSpread}` : c.tuesdayPoolSpread}</span></div>
-                  <div><span className="text-zinc-500 block text-[10px]">Model Line</span><span className="text-zinc-200 font-bold">{c.projectedSpread > 0 ? `+${c.projectedSpread}` : c.projectedSpread}</span></div>
-                  <div><span className="text-zinc-500 block text-[10px]">Edge</span><span className="text-emerald-400 font-bold">+{c.edge} pts</span></div>
-                </div>
-              </div>
-            </div>
-          ))}
+            ))}
 
-        {activeTab === "MONEYLINE" &&
-          moneylineCards.map((c, i) => (
-            <div key={c.id} className={`p-4 rounded-xl border bg-zinc-900/80 ${c.isTossUp ? "border-amber-500/40" : "border-zinc-800"}`}>
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
-                  <span className="text-white font-semibold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
+          {activeTab === "MONEYLINE" &&
+            moneylineCards.map((c, i) => (
+              <div key={c.id} className={`p-4 rounded-xl border bg-zinc-900/80 ${c.isTossUp ? "border-amber-500/40" : "border-zinc-800"}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
+                    <span className="text-white font-semibold text-sm">{c.matchup}</span>
+                  </div>
+                  <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
-                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
+                <div className="flex items-center justify-between bg-zinc-950/70 p-3 rounded-lg">
+                  <div>
+                    <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Best Value ML</span>
+                    <span className="text-base font-black text-emerald-400">{c.team} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
+                  </div>
+                  <div className="text-right font-mono text-xs">
+                    <span className="text-zinc-300 block">ROI: <strong className="text-emerald-400">+{c.evPct}%</strong></span>
+                    <span className="text-zinc-500 text-[11px]">Win Prob: {c.winProbPct}%</span>
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center justify-between bg-zinc-950/70 p-3 rounded-lg">
-                <div>
-                  <span className="text-zinc-500 text-[11px] uppercase font-bold tracking-wider block">Best Value ML</span>
-                  <span className="text-base font-black text-emerald-400">{c.team} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
-                </div>
-                <div className="text-right font-mono text-xs">
-                  <span className="text-zinc-300 block">ROI: <strong className="text-emerald-400">+{c.evPct}%</strong></span>
-                  <span className="text-zinc-500 text-[11px]">Win Prob: {c.winProbPct}%</span>
-                </div>
-              </div>
-            </div>
-          ))}
+            ))}
 
-        {activeTab === "UPSET" &&
-          upsetCards.map((c, i) => (
-            <div key={c.id} className={`p-4 rounded-xl border bg-zinc-900/80 ${c.isTossUp ? "border-amber-500/40" : "border-zinc-800"}`}>
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
-                  <span className="text-white font-semibold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
+          {activeTab === "UPSET" &&
+            upsetCards.map((c, i) => (
+              <div key={c.id} className={`p-4 rounded-xl border bg-zinc-900/80 ${c.isTossUp ? "border-amber-500/40" : "border-zinc-800"}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
+                    <span className="text-white font-semibold text-sm">{c.matchup}</span>
+                  </div>
+                  <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
                 </div>
-                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
+                <div className="flex items-center justify-between bg-zinc-950/70 p-3 rounded-lg">
+                  <div>
+                    <span className="text-amber-500 text-[11px] uppercase font-bold tracking-wider block">Live Dog Candidate</span>
+                    <span className="text-base font-black text-amber-400">{c.dog} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
+                  </div>
+                  <div className="text-right font-mono text-xs">
+                    <span className="text-zinc-200 block font-bold">Win Prob: {c.winProbPct}%</span>
+                    <span className="text-zinc-500 text-[11px]">EV: +{c.evPct}% | Score: {c.score}</span>
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center justify-between bg-zinc-950/70 p-3 rounded-lg">
-                <div>
-                  <span className="text-amber-500 text-[11px] uppercase font-bold tracking-wider block">Live Dog Candidate</span>
-                  <span className="text-base font-black text-amber-400">{c.dog} ({c.odds > 0 ? `+${c.odds}` : c.odds})</span>
-                </div>
-                <div className="text-right font-mono text-xs">
-                  <span className="text-zinc-200 block font-bold">Win Prob: {c.winProbPct}%</span>
-                  <span className="text-zinc-500 text-[11px]">EV: +{c.evPct}% | Score: {c.score}</span>
-                </div>
-              </div>
-            </div>
-          ))}
-      </div>
+            ))}
+        </div>
+      )}
     </main>
   );
 }
