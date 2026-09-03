@@ -9,11 +9,10 @@ interface TeamUnits {
   rushDef: number;
   scoringOff: number;
   scoringDef: number;
-  turnoverRank: number; // 1 = elite turnover margin, 32 = turnover prone
+  turnoverRank: number;
   overall: number;
 }
 
-// Power baselines derived from Super Bowl futures, win totals, and unit baselines
 const SUPER_BOWL_POWER_RATINGS: Record<string, TeamUnits> = {
   LAR: { overall: 5.8, passOff: 2.8, rushOff: 1.8, passDef: 1.6, rushDef: 1.4, scoringOff: 27.2, scoringDef: 19.5, turnoverRank: 8 },
   KC:  { overall: 5.6, passOff: 2.7, rushOff: 1.0, passDef: 1.5, rushDef: 1.0, scoringOff: 25.8, scoringDef: 18.2, turnoverRank: 5 },
@@ -49,7 +48,6 @@ const SUPER_BOWL_POWER_RATINGS: Record<string, TeamUnits> = {
   CAR: { overall: -4.8, passOff: -1.1, rushOff: -0.3, passDef: -0.7, rushDef: -1.3, scoringOff: 16.5, scoringDef: 24.8, turnoverRank: 32 }
 };
 
-// Aliases resolver (e.g. ESPN uses WSH, JAC, OAK, etc.)
 function resolveTeamAbbr(raw: string): string {
   const norm = raw.toUpperCase().trim();
   const map: Record<string, string> = {
@@ -76,6 +74,7 @@ interface GameDisplay {
   homeScore?: string;
   gameStatusText: string;
   isLiveOrFinal: boolean;
+  isCompleted: boolean;
   liveHomeSpread: number;
   liveAwaySpread: number;
   marketTotal: number;
@@ -89,11 +88,18 @@ interface GameDisplay {
   matchupHighlight: string;
   awayRankSummary: string;
   homeRankSummary: string;
+  // Backtest Verification
+  actualMargin?: number; // homeScore - awayScore
+  coverResult?: "WIN" | "LOSS" | "PUSH";
+  totalResult?: "OVER_WIN" | "UNDER_WIN" | "PUSH";
+  actualTotalPoints?: number;
+  marginError?: number;
 }
 
 export default function GridironDashboard() {
   const [selectedWeek, setSelectedWeek] = useState(1);
-  const [activeTab, setActiveTab] = useState<"SPREAD" | "MONEYLINE" | "TOTALS" | "UPSET">("SPREAD");
+  const [backtestSeason, setBacktestSeason] = useState<"CURRENT" | "2024">("CURRENT");
+  const [activeTab, setActiveTab] = useState<"SPREAD" | "TOTALS" | "MONEYLINE" | "UPSET">("SPREAD");
   const [games, setGames] = useState<GameDisplay[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>("");
@@ -109,12 +115,13 @@ export default function GridironDashboard() {
       });
 
       let totalHistory = 0;
+      const seasonQuery = backtestSeason === "2024" ? "&dates=2024" : "";
 
       if (selectedWeek > 1) {
         const priorWeekFetches = [];
         for (let w = 1; w < selectedWeek; w++) {
           priorWeekFetches.push(
-            fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${w}`)
+            fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${w}${seasonQuery}`)
               .then((r) => r.json())
               .catch(() => ({ events: [] }))
           );
@@ -167,7 +174,7 @@ export default function GridironDashboard() {
       const rushDefRanks = getRanks("rushDef");
 
       const res = await fetch(
-        `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${selectedWeek}`
+        `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=${selectedWeek}${seasonQuery}`
       );
       const data = await res.json();
       const events = data.events || [];
@@ -175,12 +182,12 @@ export default function GridironDashboard() {
       const parsedGames: GameDisplay[] = events.map((ev: any) => {
         const comp = ev.competitions?.[0];
         const statusType = ev.status?.type?.name;
+        const isCompleted = statusType === "STATUS_FINAL";
         const statusDetail = ev.status?.type?.detail || "Scheduled";
 
         const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
         const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
 
-        // Canonical abbreviation lookup with WSH alias fallback
         const homeAbbrRaw = home?.team?.abbreviation || "HOU";
         const awayAbbrRaw = away?.team?.abbreviation || "IND";
         const homeAbbr = resolveTeamAbbr(homeAbbrRaw);
@@ -191,10 +198,8 @@ export default function GridironDashboard() {
         const homeUnits = currentRatings[homeAbbr] || defaultUnits;
         const awayUnits = currentRatings[awayAbbr] || defaultUnits;
 
-        // Base spread: (Away - Home) - HFA
         const rawHomeSpread = (awayUnits.overall - homeUnits.overall) - HOME_FIELD_ADVANTAGE;
 
-        // Trench clash disparities
         const homePassRankAdv = (passDefRanks[awayAbbr] || 16) - (passOffRanks[homeAbbr] || 16);
         const homeRushRankAdv = (rushDefRanks[awayAbbr] || 16) - (rushOffRanks[homeAbbr] || 16);
         const awayPassRankAdv = (passDefRanks[homeAbbr] || 16) - (passOffRanks[awayAbbr] || 16);
@@ -215,14 +220,12 @@ export default function GridironDashboard() {
           matchupHighlight = `Defensive Anchor: ${away?.team?.displayName} ranks #${rushDefRanks[awayAbbr] || 1} against the run`;
         }
 
-        // Turnover & unit clash nudge (+/- 0.6 pts max)
         const turnoverTilt = ((homeUnits.turnoverRank - awayUnits.turnoverRank) * 0.02);
         const netRankDiff = (awayPassRankAdv + awayRushRankAdv) - (homePassRankAdv + homeRushRankAdv);
         const clampedClash = Math.max(-0.6, Math.min(0.6, (netRankDiff * 0.03) + turnoverTilt));
 
         let projectedHomeSpread = Number((rawHomeSpread + clampedClash).toFixed(1));
 
-        // Live Market consensus
         let liveHomeSpread = 0;
         if (oddsData?.spread !== undefined && Math.abs(Number(oddsData.spread)) <= 21) {
           liveHomeSpread = Number(oddsData.spread);
@@ -231,25 +234,21 @@ export default function GridironDashboard() {
           if (liveHomeSpread % 1 === 0) liveHomeSpread -= 0.5;
         }
 
-        // Over/Under totals from market
         let marketTotal = 44.5;
         if (oddsData?.overUnder !== undefined) {
           marketTotal = Number(oddsData.overUnder);
         }
 
-        // Model projected total
         const baseGameTotal = ((homeUnits.scoringOff + awayUnits.scoringDef) / 2) +
                               ((awayUnits.scoringOff + homeUnits.scoringDef) / 2) + 0.8;
         const projectedTotal = Number(baseGameTotal.toFixed(1));
 
-        // Smooth non-clamped distribution (realistic deviation curve)
         const delta = projectedHomeSpread - liveHomeSpread;
         projectedHomeSpread = Number((liveHomeSpread + (Math.tanh(delta / 2.5) * 2.8)).toFixed(1));
 
         const liveAwaySpread = Number((-liveHomeSpread).toFixed(1));
         const projectedAwaySpread = Number((-projectedHomeSpread).toFixed(1));
 
-        // Final score projections
         const predictedHomeRaw = (projectedTotal / 2) - (projectedHomeSpread / 2);
         const predictedAwayRaw = (projectedTotal / 2) + (projectedHomeSpread / 2);
 
@@ -270,6 +269,46 @@ export default function GridironDashboard() {
           awayML = liveHomeSpread < 0 ? 100 + Math.round(Math.abs(liveHomeSpread) * 20) : -110 - Math.round(liveHomeSpread * 20);
         }
 
+        // Backtest calculations if game is completed
+        let coverResult: "WIN" | "LOSS" | "PUSH" | undefined = undefined;
+        let actualMargin: number | undefined = undefined;
+        let marginError: number | undefined = undefined;
+        let actualTotalPoints: number | undefined = undefined;
+        let totalResult: "OVER_WIN" | "UNDER_WIN" | "PUSH" | undefined = undefined;
+
+        if (isCompleted && home?.score !== undefined && away?.score !== undefined) {
+          const hScore = Number(home.score);
+          const aScore = Number(away.score);
+          actualMargin = hScore - aScore;
+          actualTotalPoints = hScore + aScore;
+
+          // Model pick: homeEdge >= 0 means Pick Home, else Pick Away
+          const homeEdge = liveHomeSpread - projectedHomeSpread;
+          const pickedHome = homeEdge >= 0;
+
+          // Against the Spread result
+          const coverMargin = actualMargin + liveHomeSpread; // Home covers if actualMargin > -liveHomeSpread
+          if (coverMargin === 0) {
+            coverResult = "PUSH";
+          } else if ((pickedHome && coverMargin > 0) || (!pickedHome && coverMargin < 0)) {
+            coverResult = "WIN";
+          } else {
+            coverResult = "LOSS";
+          }
+
+          // Over / Under result
+          const isModelOver = projectedTotal >= marketTotal;
+          if (actualTotalPoints === marketTotal) {
+            totalResult = "PUSH";
+          } else if ((isModelOver && actualTotalPoints > marketTotal) || (!isModelOver && actualTotalPoints < marketTotal)) {
+            totalResult = "OVER_WIN";
+          } else {
+            totalResult = "UNDER_WIN";
+          }
+
+          marginError = Math.abs((finalHomeScore - finalAwayScore) - actualMargin);
+        }
+
         return {
           id: ev.id,
           matchup: `${away?.team?.displayName} @ ${home?.team?.displayName}`,
@@ -280,7 +319,8 @@ export default function GridironDashboard() {
           awayScore: away?.score,
           homeScore: home?.score,
           gameStatusText: statusDetail,
-          isLiveOrFinal: statusType === "STATUS_IN_PROGRESS" || statusType === "STATUS_FINAL",
+          isLiveOrFinal: statusType === "STATUS_IN_PROGRESS" || isCompleted,
+          isCompleted,
           liveHomeSpread,
           liveAwaySpread,
           marketTotal,
@@ -293,7 +333,12 @@ export default function GridironDashboard() {
           predictedAwayScore: finalAwayScore,
           matchupHighlight,
           awayRankSummary: `Pass O: #${passOffRanks[awayAbbr] || 16} | Rush D: #${rushDefRanks[awayAbbr] || 16}`,
-          homeRankSummary: `Pass O: #${passOffRanks[homeAbbr] || 16} | Rush D: #${rushDefRanks[homeAbbr] || 16}`
+          homeRankSummary: `Pass O: #${passOffRanks[homeAbbr] || 16} | Rush D: #${rushDefRanks[homeAbbr] || 16}`,
+          actualMargin,
+          coverResult,
+          totalResult,
+          actualTotalPoints,
+          marginError
         };
       });
 
@@ -305,7 +350,7 @@ export default function GridironDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [selectedWeek]);
+  }, [selectedWeek, backtestSeason]);
 
   useEffect(() => {
     fetchLiveSlate();
@@ -344,7 +389,6 @@ export default function GridironDashboard() {
     return { tier: "Toss-Up (50/50)", color: "amber", isTossUp: true };
   };
 
-  // 1. SPREAD CARDS (With Key Number Leverage bonus)
   const spreadCards = games.map((g) => {
     const homeEdge = g.liveHomeSpread - g.projectedHomeSpread;
     const isHomePick = homeEdge >= 0;
@@ -355,7 +399,6 @@ export default function GridironDashboard() {
     const spreadString = pickedSpreadNum > 0 ? `+${pickedSpreadNum}` : `${pickedSpreadNum}`;
 
     let edge = Number(Math.abs(homeEdge).toFixed(1));
-    // Key number crossing bonus (3 or 7)
     const line1 = Math.abs(g.liveHomeSpread);
     const line2 = Math.abs(g.projectedHomeSpread);
     if ((line1 > 3 && line2 <= 3) || (line1 <= 3 && line2 > 3) || (line1 > 7 && line2 <= 7)) {
@@ -363,33 +406,18 @@ export default function GridironDashboard() {
     }
 
     const meta = classifyTier("SPREAD", edge);
-
-    return {
-      ...g,
-      teamPicked,
-      spreadString,
-      isFavorite,
-      edge,
-      ...meta
-    };
+    return { ...g, teamPicked, spreadString, isFavorite, edge, ...meta };
   }).sort((a, b) => b.edge - a.edge);
 
-  // 2. OVER / UNDER TOTALS CARDS
   const totalsCards = games.map((g) => {
     const totalDiff = g.projectedTotal - g.marketTotal;
     const isOver = totalDiff >= 0;
     const pickType = isOver ? "OVER" : "UNDER";
     const edge = Number(Math.abs(totalDiff).toFixed(1));
     const meta = classifyTier("TOTALS", edge);
-    return {
-      ...g,
-      pickType,
-      edge,
-      ...meta
-    };
+    return { ...g, pickType, edge, ...meta };
   }).sort((a, b) => b.edge - a.edge);
 
-  // 3. MONEYLINE CARDS
   const moneylineCards = games.map((g) => {
     const homeProb = spreadToWinProbability(g.projectedHomeSpread);
     const awayProb = 1 - homeProb;
@@ -404,7 +432,6 @@ export default function GridironDashboard() {
     return { ...g, team, odds, evPct, winProbPct, ...meta };
   }).sort((a, b) => b.evPct - a.evPct);
 
-  // 4. UPSET CARDS
   const upsetCards = games.map((g) => {
     const isAwayDog = g.awayML > g.homeML;
     const dog = isAwayDog ? g.awayTeam : g.homeTeam;
@@ -415,6 +442,22 @@ export default function GridironDashboard() {
     const meta = classifyTier("UPSET", score);
     return { ...g, dog, odds, winProbPct: Number((winProb * 100).toFixed(1)), evPct: Number((ev * 100).toFixed(1)), score, ...meta };
   }).sort((a, b) => b.score - a.score);
+
+  // Calculate Backtest Metrics
+  const completedGames = games.filter((g) => g.isCompleted && g.coverResult);
+  const wins = completedGames.filter((g) => g.coverResult === "WIN").length;
+  const losses = completedGames.filter((g) => g.coverResult === "LOSS").length;
+  const pushes = completedGames.filter((g) => g.coverResult === "PUSH").length;
+  const totalCoverDecided = wins + losses;
+  const coverWinPct = totalCoverDecided > 0 ? Number(((wins / totalCoverDecided) * 100).toFixed(1)) : 0;
+
+  const lockCards = spreadCards.filter((c) => c.tier === "Lock (3★)" && c.coverResult);
+  const lockWins = lockCards.filter((c) => c.coverResult === "WIN").length;
+  const lockLosses = lockCards.filter((c) => c.coverResult === "LOSS").length;
+
+  const avgMarginError = completedGames.length > 0
+    ? Number((completedGames.reduce((acc, g) => acc + (g.marginError || 0), 0) / completedGames.length).toFixed(1))
+    : 0;
 
   const badgeStyles: Record<string, string> = {
     emerald: "bg-emerald-950/70 border-emerald-500/40 text-emerald-400",
@@ -435,16 +478,29 @@ export default function GridironDashboard() {
                 LIVE SYNC
               </span>
             </div>
-            <p className="text-xs text-zinc-500 mt-0.5">Key Number Leverage & Over/Under Value Engine</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Empirical Backtest & Key Number Model</p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Backtest Toggle Button */}
+            <button
+              onClick={() => setBacktestSeason((prev) => (prev === "CURRENT" ? "2024" : "CURRENT"))}
+              className={`text-xs font-mono font-bold px-3 py-1.5 rounded-lg border transition ${
+                backtestSeason === "2024"
+                  ? "bg-purple-950/80 border-purple-500/60 text-purple-300 shadow-sm"
+                  : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {backtestSeason === "2024" ? "🔬 Backtest Active (2024)" : "🔬 Run Backtest"}
+            </button>
+
             <button
               onClick={() => fetchLiveSlate()}
-              className="text-xs font-mono bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 px-2.5 py-1.5 rounded-lg transition active:scale-95"
+              className="text-xs font-mono bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 px-2.5 py-1.5 rounded-lg transition"
             >
-              ↻ Refresh Now
+              ↻ Refresh
             </button>
+
             <div className="flex items-center gap-1.5">
               <label htmlFor="week-selector" className="text-xs text-zinc-400 font-semibold">Slate:</label>
               <select
@@ -461,15 +517,45 @@ export default function GridironDashboard() {
           </div>
         </div>
 
+        {/* Backtest Performance Scorecard Banner */}
+        {completedGames.length > 0 && (
+          <div className="mt-4 p-3.5 bg-zinc-900/95 border border-purple-500/40 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs font-mono">
+            <div>
+              <span className="text-purple-400 uppercase font-black tracking-wider text-[10px] block">
+                {backtestSeason === "2024" ? "2024 Historical Backtest Scorecard" : "Current Slate Completed Results"}
+              </span>
+              <span className="text-white font-bold text-sm">
+                ATS Record: <strong className={coverWinPct >= 55 ? "text-emerald-400" : "text-zinc-200"}>{wins}-{losses}</strong> ({coverWinPct}%)
+                {pushes > 0 && <span className="text-zinc-500 text-xs"> ({pushes} Pushes)</span>}
+              </span>
+            </div>
+
+            <div className="flex gap-4 border-t sm:border-t-0 sm:border-l border-zinc-800 pt-2 sm:pt-0 sm:pl-4 text-[11px]">
+              <div>
+                <span className="text-zinc-500 block text-[10px]">Lock (3★) ATS</span>
+                <span className="text-emerald-400 font-bold">{lockWins}-{lockLosses}</span>
+              </div>
+              <div>
+                <span className="text-zinc-500 block text-[10px]">Avg Score Error</span>
+                <span className="text-zinc-300 font-bold">±{avgMarginError} pts</span>
+              </div>
+              <div>
+                <span className="text-zinc-500 block text-[10px]">Completed</span>
+                <span className="text-zinc-300 font-bold">{completedGames.length} Games</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col sm:flex-row sm:items-center justify-between mt-3 text-[11px] font-mono text-zinc-500 gap-1">
           <span>
-            Algorithm:{" "}
-            {selectedWeek === 1 ? (
-              <strong className="text-zinc-300">Composite Power + Key Leverage Numbers (3, 7)</strong>
+            Mode:{" "}
+            {backtestSeason === "2024" ? (
+              <strong className="text-purple-400">2024 Historical Archive Backtest (Replaying Schedule)</strong>
+            ) : selectedWeek === 1 ? (
+              <strong className="text-zinc-300">Composite Power + Key Numbers (3, 7)</strong>
             ) : (
-              <strong className="text-emerald-400">
-                Dynamic Rolling Regression ({historicalGamesCount} Completed Games Factored)
-              </strong>
+              <strong className="text-emerald-400">Dynamic Rolling ({historicalGamesCount} Games Analyzed)</strong>
             )}
           </span>
           <span>Last Updated: <strong className="text-zinc-300">{lastUpdated || "Connecting..."}</strong> (Sync #{syncCount})</span>
@@ -494,7 +580,7 @@ export default function GridironDashboard() {
       {loading && games.length === 0 ? (
         <div className="py-24 text-center text-zinc-500 text-sm">
           <div className="inline-block w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3" />
-          <p>Processing key number leverage & simulated score distributions...</p>
+          <p>Processing historical backtest outcomes & simulated margins...</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -507,7 +593,20 @@ export default function GridironDashboard() {
                     <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
                     <span className="text-white font-bold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
                   </div>
-                  <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
+                  <div className="flex items-center gap-2">
+                    {c.coverResult && (
+                      <span className={`text-xs font-mono font-black px-2 py-0.5 rounded border ${
+                        c.coverResult === "WIN"
+                          ? "bg-emerald-950 text-emerald-400 border-emerald-500/60"
+                          : c.coverResult === "LOSS"
+                          ? "bg-red-950 text-red-400 border-red-500/60"
+                          : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                      }`}>
+                        COVER {c.coverResult}
+                      </span>
+                    )}
+                    <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
+                  </div>
                 </div>
 
                 <div className="bg-zinc-950/60 border border-zinc-800/80 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-400 mb-2 flex flex-col sm:flex-row justify-between gap-1">
@@ -592,7 +691,14 @@ export default function GridironDashboard() {
                     <span className="text-zinc-500 font-mono text-xs">#{i + 1}</span>
                     <span className="text-white font-bold text-sm">{c.awayTeam} @ {c.homeTeam}</span>
                   </div>
-                  <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
+                  <div className="flex items-center gap-2">
+                    {c.totalResult && (
+                      <span className="text-xs font-mono font-black px-2 py-0.5 rounded border bg-zinc-800 text-zinc-300 border-zinc-700">
+                        ACTUAL TOTAL: {c.actualTotalPoints}
+                      </span>
+                    )}
+                    <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeStyles[c.color]}`}>{c.tier}</span>
+                  </div>
                 </div>
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/70 p-3.5 rounded-lg gap-3">
